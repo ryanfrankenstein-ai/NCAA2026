@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>March Madness 2026 — Bracket Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-inner">
+      <div class="header-left">
+        <div class="logo-mark">MM</div>
+        <div>
+          <h1>March Madness <span class="year">2026</span></h1>
+          <p class="subtitle">NCAA D1 Men's Basketball — Live Bracket Tracker</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="live-badge" id="liveBadge">
+          <span class="pulse-dot"></span> LIVE
+        </div>
+        <div class="last-updated" id="lastUpdated">Updating…</div>
+        <button class="refresh-btn" id="refreshBtn" onclick="fetchScores()">↻ Refresh</button>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" onclick="showTab('bracket')">Bracket</button>
+      <button class="tab" onclick="showTab('scores')">Live Scores</button>
+      <button class="tab" onclick="showTab('standings')">Group Standings</button>
+    </nav>
+  </header>
+
+  <!-- LIVE SCORES TAB -->
+  <section id="tab-scores" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Live & Recent Games</h2>
+      <p>Auto-refreshes every 30 seconds</p>
+    </div>
+    <div id="scoresGrid" class="scores-grid">
+      <div class="loading-msg">Loading scores from ESPN…</div>
+    </div>
+  </section>
+
+  <!-- BRACKET TAB -->
+  <section id="tab-bracket" class="tab-content">
+    <div class="section-header">
+      <h2>2026 NCAA Tournament Bracket</h2>
+      <p>Click a team to mark them as winner</p>
+    </div>
+    <div class="regions-grid">
+      <div id="region-east" class="region-block"></div>
+      <div id="region-west" class="region-block"></div>
+      <div id="region-south" class="region-block"></div>
+      <div id="region-midwest" class="region-block"></div>
+    </div>
+    <div class="final-four-wrapper">
+      <h3 class="ff-title">🏆 Final Four & Championship</h3>
+      <div id="final-four" class="final-four-grid"></div>
+    </div>
+  </section>
+
+  <!-- STANDINGS TAB -->
+  <section id="tab-standings" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Group Standings</h2>
+      <p>Yahoo Fantasy Group #20048 — Update scores manually below</p>
+    </div>
+    <div class="standings-container">
+      <div class="standings-card">
+        <div class="standings-header-row">
+          <span>Rank</span><span>Participant</span><span>Points</span><span>Max Pts</span><span>Correct</span>
+        </div>
+        <div id="standingsList"></div>
+      </div>
+      <div class="standings-editor">
+        <h3>Update Standings</h3>
+        <p>Since Yahoo requires login, update your group standings here. Data saves to your browser.</p>
+        <div class="editor-grid" id="editorGrid"></div>
+        <div class="editor-actions">
+          <button class="btn-add" onclick="addParticipant()">+ Add Participant</button>
+          <button class="btn-save" onclick="saveStandings()">Save Standings</button>
+        </div>
+        <div class="yahoo-link">
+          <a href="https://tournament.fantasysports.yahoo.com/mens-basketball-bracket/group/20048" target="_blank">
+            → Open Yahoo Group to copy scores
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FIRST FOUR RESULTS BANNER -->
+  <div id="firstFourBanner" class="first-four-banner">
+    <strong>First Four Results:</strong>
+    <span id="firstFourResults">Loading…</span>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

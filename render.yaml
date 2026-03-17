@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: march-madness-2026
+    runtime: static
+    staticPublishPath: .
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache, must-revalidate
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

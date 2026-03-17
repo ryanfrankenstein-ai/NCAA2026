@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>March Madness 2026 — Bracket Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=Roboto+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-inner">
+      <div class="header-left">
+        <div class="logo-mark">MM</div>
+        <div>
+          <h1>March Madness <span class="year">2026</span></h1>
+          <p class="subtitle">NCAA D1 Men's Basketball — Live Bracket Tracker</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="live-badge" id="liveBadge">
+          <span class="pulse-dot"></span> LIVE
+        </div>
+        <div class="last-updated" id="lastUpdated">Updating…</div>
+        <button class="refresh-btn" id="refreshBtn" onclick="fetchScores()">↻ Refresh</button>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" onclick="showTab('bracket')">Bracket</button>
+      <button class="tab" onclick="showTab('scores')">Live Scores</button>
+      <button class="tab" onclick="showTab('standings')">Group Standings</button>
+    </nav>
+  </header>
+
+  <!-- LIVE SCORES TAB -->
+  <section id="tab-scores" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Live & Recent Games</h2>
+      <p>Auto-refreshes every 30 seconds</p>
+    </div>
+    <div id="scoresGrid" class="scores-grid">
+      <div class="loading-msg">Loading scores from ESPN…</div>
+    </div>
+  </section>
+
+  <!-- BRACKET TAB -->
+  <section id="tab-bracket" class="tab-content">
+    <div class="section-header">
+      <h2>2026 NCAA Tournament Bracket</h2>
+      <p>Auto-populated from ESPN live results • Refreshes every 30 seconds</p>
+    </div>
+
+    <!-- FIRST FOUR -->
+    <div class="first-four-section">
+      <div class="ff-section-title">FIRST FOUR — Dayton, OH · Mar 17–18</div>
+      <div id="firstFourGames" class="first-four-games"></div>
+    </div>
+
+    <!-- MAIN BRACKET: scrollable horizontal layout -->
+    <div class="bracket-scroll-wrapper">
+      <div class="bracket-canvas" id="bracketCanvas">
+
+        <!-- LEFT SIDE: East + South -->
+        <div class="bracket-side left-side">
+
+          <div class="region-column-group">
+            <div class="region-label-top">EAST · Washington D.C.</div>
+            <div class="rounds-row">
+              <div class="round-col" id="east-r1"></div>
+              <div class="round-col" id="east-r2"></div>
+              <div class="round-col" id="east-s16"></div>
+              <div class="round-col" id="east-e8"></div>
+            </div>
+          </div>
+
+          <div class="region-column-group">
+            <div class="region-label-bottom">SOUTH · Houston, TX</div>
+            <div class="rounds-row">
+              <div class="round-col" id="south-r1"></div>
+              <div class="round-col" id="south-r2"></div>
+              <div class="round-col" id="south-s16"></div>
+              <div class="round-col" id="south-e8"></div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- CENTER: Final Four + Championship -->
+        <div class="bracket-center">
+          <div class="center-label">FINAL FOUR<br><span>San Antonio · Apr 4</span></div>
+          <div class="ff-matchup-display">
+            <div class="ff-team-slot" id="ff-east"></div>
+            <div class="ff-vs">vs</div>
+            <div class="ff-team-slot" id="ff-south"></div>
+          </div>
+          <div class="championship-display">
+            <div class="champ-trophy">🏆</div>
+            <div class="champ-label-center">NATIONAL CHAMPION</div>
+            <div class="champ-team-display" id="champion-display">TBD</div>
+            <div class="champ-date">Apr 6 · San Antonio</div>
+          </div>
+          <div class="ff-matchup-display">
+            <div class="ff-team-slot" id="ff-west"></div>
+            <div class="ff-vs">vs</div>
+            <div class="ff-team-slot" id="ff-midwest"></div>
+          </div>
+          <div class="center-label bottom">FINAL FOUR<br><span>San Antonio · Apr 4</span></div>
+        </div>
+
+        <!-- RIGHT SIDE: West + Midwest -->
+        <div class="bracket-side right-side">
+
+          <div class="region-column-group">
+            <div class="region-label-top">WEST · San Jose, CA</div>
+            <div class="rounds-row right">
+              <div class="round-col" id="west-e8"></div>
+              <div class="round-col" id="west-s16"></div>
+              <div class="round-col" id="west-r2"></div>
+              <div class="round-col" id="west-r1"></div>
+            </div>
+          </div>
+
+          <div class="region-column-group">
+            <div class="region-label-bottom">MIDWEST · Chicago, IL</div>
+            <div class="rounds-row right">
+              <div class="round-col" id="midwest-e8"></div>
+              <div class="round-col" id="midwest-s16"></div>
+              <div class="round-col" id="midwest-r2"></div>
+              <div class="round-col" id="midwest-r1"></div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Round labels bar -->
+      <div class="round-labels-bar">
+        <div class="rl">R64</div>
+        <div class="rl">R32</div>
+        <div class="rl">Sweet 16</div>
+        <div class="rl">Elite 8</div>
+        <div class="rl center-rl">Final Four</div>
+        <div class="rl">Elite 8</div>
+        <div class="rl">Sweet 16</div>
+        <div class="rl">R32</div>
+        <div class="rl">R64</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STANDINGS TAB -->
+  <section id="tab-standings" class="tab-content hidden">
+    <div class="section-header">
+      <h2>Group Standings</h2>
+      <p>Survive and Advance · 8 Members · <a href="https://tournament.fantasysports.yahoo.com/mens-basketball-bracket/group/20048" target="_blank" class="yahoo-ext-link">Open on Yahoo ↗</a></p>
+    </div>
+
+    <!-- LEADERBOARD -->
+    <div class="leaderboard-wrap">
+      <div id="leaderboard"></div>
+    </div>
+
+    <!-- PICKS COMPARISON TABLE -->
+    <div class="picks-section">
+      <div class="picks-section-header">
+        <h3>Bracket Picks Comparison</h3>
+        <p>Who picked what — picks in green are still alive, red are eliminated</p>
+      </div>
+      <div class="picks-table-wrap">
+        <table class="picks-table" id="picksTable">
+          <thead id="picksHead"></thead>
+          <tbody id="picksBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- CHAMPION PICKS -->
+    <div class="champ-picks-section">
+      <h3>🏆 Champion Picks</h3>
+      <div id="champPicksGrid" class="champ-picks-grid"></div>
+    </div>
+
+  </section>
+
+  <!-- FIRST FOUR RESULTS BANNER -->
+  <div id="firstFourBanner" class="first-four-banner">
+    <strong>First Four Results:</strong>
+    <span id="firstFourResults">Loading…</span>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

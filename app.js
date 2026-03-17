@@ -1,0 +1,515 @@
+// ============================================================
+// March Madness 2026 — App Logic
+// ESPN auto-populates bracket results. No manual clicking needed.
+// ============================================================
+
+const ESPN_SCORES_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=100&limit=50';
+const ESPN_TOURNAMENT_URL = (date) =>
+  `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=100&limit=50&dates=${date}`;
+
+let espnResults = {};
+let bracketWinners = {};
+let standingsData = [];
+let refreshInterval = null;
+let allEspnGames = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+  fetchAllTournamentData();
+  startAutoRefresh();
+});
+
+function showTab(tab) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.remove('hidden');
+  event.target.classList.add('active');
+}
+
+function startAutoRefresh() {
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(fetchAllTournamentData, 30000);
+}
+
+async function fetchWithFallback(url) {
+  const proxy = 'https://api.allorigins.win/raw?url=';
+  try {
+    const r = await fetch(proxy + encodeURIComponent(url));
+    if (!r.ok) throw new Error('proxy fail');
+    return await r.json();
+  } catch {
+    const r = await fetch(url);
+    return await r.json();
+  }
+}
+
+async function fetchAllTournamentData() {
+  const btn = document.getElementById('refreshBtn');
+  if (btn) { btn.textContent = '↻ Loading…'; btn.disabled = true; }
+
+  const dates = ['20260317','20260318','20260319','20260320','20260321','20260322',
+    '20260326','20260327','20260328','20260329','20260404','20260406'];
+
+  let allGames = [];
+  try {
+    const fetches = [
+      fetchWithFallback(ESPN_SCORES_URL),
+      ...dates.map(d => fetchWithFallback(ESPN_TOURNAMENT_URL(d)).catch(() => ({ events: [] })))
+    ];
+    const results = await Promise.all(fetches);
+    allGames = results.flatMap(d => d.events || []);
+    const seen = new Set();
+    allGames = allGames.filter(g => { if (seen.has(g.id)) return false; seen.add(g.id); return true; });
+  } catch (err) {
+    console.warn('ESPN fetch error:', err);
+  }
+
+  allEspnGames = allGames;
+  processEspnResults(allGames);
+  renderScores(allGames);
+  renderBracket();
+  initStandings();
+  updateLastUpdated();
+
+  if (btn) { btn.textContent = '↻ Refresh'; btn.disabled = false; }
+}
+
+function processEspnResults(games) {
+  espnResults = {};
+  bracketWinners = {};
+
+  for (const event of games) {
+    const comp = event.competitions?.[0];
+    if (!comp) continue;
+    const status = comp.status?.type;
+    const completed = status?.completed;
+    const isLive = status?.state === 'in';
+
+    for (const team of (comp.competitors || [])) {
+      const raw = team.team?.displayName || team.team?.shortDisplayName || '';
+      const short = team.team?.shortDisplayName || '';
+      if (!raw) continue;
+
+      const entry = {
+        winner: team.winner === true,
+        score: team.score,
+        completed,
+        isLive,
+        seed: team.curatedRank?.current || null,
+        logo: team.team?.logo || '',
+        displayName: short || raw,
+      };
+
+      espnResults[norm(raw)] = entry;
+      if (short && short !== raw) espnResults[norm(short)] = entry;
+    }
+  }
+
+  // Map results to matchup IDs
+  const allMatchups = Object.values(BRACKET_DATA.regions).flatMap(r => r.matchups);
+  for (const m of allMatchups) {
+    const t1r = espnResults[norm(m.r1.name)];
+    const t2r = espnResults[norm(m.r2.name)];
+    if (t1r?.winner && t1r?.completed) bracketWinners[m.id] = m.r1.name;
+    else if (t2r?.winner && t2r?.completed) bracketWinners[m.id] = m.r2.name;
+  }
+}
+
+function norm(name) {
+  return (name || '').toLowerCase()
+    .replace(/\./g,'').replace(/\s+/g,' ')
+    .replace(/\bst\b/g,'state').replace(/&/g,'and').trim();
+}
+
+// ── Render Scores ─────────────────────────────────────────
+function renderScores(games) {
+  const grid = document.getElementById('scoresGrid');
+  if (!grid) return;
+
+  if (!games.length) {
+    grid.innerHTML = '<div class="no-games">No tournament games found yet — ESPN data will populate here once the tournament begins (First Four: Mar 17).</div>';
+    return;
+  }
+
+  // Sort: upcoming first → live in-progress → completed (most recent) last
+  const stateOrder = (e) => {
+    const state = e.competitions?.[0]?.status?.type?.state;
+    if (state === 'pre') return 0;
+    if (state === 'in')  return 1;
+    return 2;
+  };
+  const sorted = [...games].sort((a, b) => {
+    const sDiff = stateOrder(a) - stateOrder(b);
+    if (sDiff !== 0) return sDiff;
+    const aDate = a.date || '', bDate = b.date || '';
+    return stateOrder(a) === 2
+      ? bDate.localeCompare(aDate)
+      : aDate.localeCompare(bDate);
+  });
+
+  grid.innerHTML = sorted.map(event => {
+    const comp = event.competitions?.[0];
+    if (!comp) return '';
+    const teams = comp.competitors || [];
+    const away = teams.find(t => t.homeAway === 'away') || teams[0];
+    const home = teams.find(t => t.homeAway === 'home') || teams[1];
+    const status = comp.status?.type;
+    const statusText = status?.shortDetail || status?.description || '';
+    const isLive = status?.state === 'in';
+    const isFinal = status?.completed;
+    const headline = event.notes?.[0]?.headline || '';
+
+    const teamRow = (team) => {
+      if (!team) return '';
+      const score = (isFinal || isLive) ? (team.score ?? '—') : '';
+      const name = team.team?.shortDisplayName || team.team?.displayName || '';
+      const seed = team.curatedRank?.current || '';
+      const logo = team.team?.logo || '';
+      const won = team.winner === true;
+      return `<div class="team-row${won?' winner':''}">
+        ${logo?`<img src="${logo}" class="team-logo" alt="" onerror="this.style.display='none'">` : '<span class="team-logo-ph"></span>'}
+        ${seed?`<span class="team-seed">${seed}</span>`:''}
+        <span class="team-name">${name}</span>
+        <span class="team-score${isLive?' live-score':''}">${score}</span>
+      </div>`;
+    };
+
+    const isUpcoming = status?.state === 'pre';
+    // For upcoming games, convert the game time to Central time
+    let gameTimeDisplay = '';
+    if (isUpcoming && event.date) {
+      const d = new Date(event.date);
+      gameTimeDisplay = d.toLocaleString('en-US', {
+        timeZone: 'America/Chicago',
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+        timeZoneName: 'short'
+      });
+    }
+
+    // statusText from ESPN for live/final games (period, clock, "Final", etc.)
+    // For upcoming games, replace ESPN's time (which is ET) with our CT conversion
+    const displayStatus = isUpcoming && gameTimeDisplay ? gameTimeDisplay : (isLive ? statusText : statusText);
+
+    return `<div class="score-card${isLive?' card-live':''}${isFinal?' card-final':''}${isUpcoming?' card-upcoming':''}">
+      ${headline?`<div class="game-round">${headline}</div>`:''}
+      ${teamRow(away)}${teamRow(home)}
+      <div class="game-status${isLive?' status-live':''}">${isLive?'🔴 ':''}${displayStatus}</div>
+    </div>`;
+  }).join('');
+
+  const hasLive = games.some(e => e.competitions?.[0]?.status?.type?.state === 'in');
+  const badge = document.getElementById('liveBadge');
+  if (badge) badge.style.display = hasLive ? 'flex' : 'none';
+}
+
+// ── Render Bracket ────────────────────────────────────────
+function renderBracket() {
+  ['east','south','west','midwest'].forEach(rk => {
+    const region = BRACKET_DATA.regions[rk];
+    const ms = region.matchups;
+
+    // R64
+    const r1 = document.getElementById(`${rk}-r1`);
+    if (r1) r1.innerHTML = `<div class="round-header">First Round</div>` + ms.map(m => matchupCard(m)).join('');
+
+    // Resolve R64 winners to build R32 matchups
+    const r2ms = [
+      buildAdvancedMatchup(`${rk}-r2-1`, ms[0], ms[1]),
+      buildAdvancedMatchup(`${rk}-r2-2`, ms[2], ms[3]),
+      buildAdvancedMatchup(`${rk}-r2-3`, ms[4], ms[5]),
+      buildAdvancedMatchup(`${rk}-r2-4`, ms[6], ms[7]),
+    ];
+    const r2 = document.getElementById(`${rk}-r2`);
+    if (r2) r2.innerHTML = `<div class="round-header">Second Round</div>` + r2ms.map(m => advancedCard(m)).join('');
+
+    // S16
+    const s16ms = [
+      buildAdvancedMatchup(`${rk}-s16-1`, r2ms[0], r2ms[1], true),
+      buildAdvancedMatchup(`${rk}-s16-2`, r2ms[2], r2ms[3], true),
+    ];
+    const s16 = document.getElementById(`${rk}-s16`);
+    if (s16) s16.innerHTML = `<div class="round-header">Sweet 16</div>` + s16ms.map(m => advancedCard(m)).join('');
+
+    // E8
+    const e8m = buildAdvancedMatchup(`${rk}-e8`, s16ms[0], s16ms[1], true);
+    const e8 = document.getElementById(`${rk}-e8`);
+    if (e8) e8.innerHTML = `<div class="round-header">Elite 8</div>` + advancedCard(e8m, true);
+
+    region._e8matchup = e8m;
+  });
+
+  // Final Four slots
+  ['east','south','west','midwest'].forEach(rk => {
+    const region = BRACKET_DATA.regions[rk];
+    const e8m = region._e8matchup;
+    const team = e8m ? getMatchupWinner(e8m.id, e8m.t1, e8m.t2) : null;
+    const slot = document.getElementById(`ff-${rk}`);
+    if (slot) {
+      slot.innerHTML = team
+        ? `<div class="ff-team-name">${team.name}</div><div class="ff-team-seed">${team.seed ? 'Seed '+team.seed : ''}</div>`
+        : `<div class="ff-tbd">TBD</div>`;
+      slot.className = 'ff-team-slot' + (team ? ' ff-filled' : '');
+    }
+  });
+
+  renderFirstFour();
+}
+
+function buildAdvancedMatchup(id, src1, src2, isAdvanced = false) {
+  // src1/src2 can be a raw matchup (has .r1/.r2) or an advanced matchup (has .t1/.t2/.id)
+  let t1, t2;
+  if (isAdvanced) {
+    t1 = getMatchupWinner(src1.id, src1.t1, src1.t2);
+    t2 = getMatchupWinner(src2.id, src2.t1, src2.t2);
+  } else {
+    t1 = bracketWinners[src1.id] ? { name: bracketWinners[src1.id], seed: src1.r1.seed } : null;
+    t2 = bracketWinners[src2.id] ? { name: bracketWinners[src2.id], seed: src2.r1.seed } : null;
+    // Fix seed for winner
+    if (bracketWinners[src1.id] === src1.r1.name) t1 = { name: src1.r1.name, seed: src1.r1.seed };
+    else if (bracketWinners[src1.id] === src1.r2.name) t1 = { name: src1.r2.name, seed: src1.r2.seed };
+    if (bracketWinners[src2.id] === src2.r1.name) t2 = { name: src2.r1.name, seed: src2.r1.seed };
+    else if (bracketWinners[src2.id] === src2.r2.name) t2 = { name: src2.r2.name, seed: src2.r2.seed };
+  }
+  return { id, t1, t2 };
+}
+
+function getMatchupWinner(id, t1, t2) {
+  const winner = bracketWinners[id];
+  if (winner) return t1?.name === winner ? t1 : t2?.name === winner ? t2 : { name: winner };
+  // Try ESPN direct lookup for advanced rounds
+  const t1r = t1 ? espnResults[norm(t1.name)] : null;
+  const t2r = t2 ? espnResults[norm(t2.name)] : null;
+  if (t1r?.winner && t1r?.completed) { bracketWinners[id] = t1.name; return t1; }
+  if (t2r?.winner && t2r?.completed) { bracketWinners[id] = t2.name; return t2; }
+  return null;
+}
+
+function matchupCard(matchup) {
+  const t1 = matchup.r1, t2 = matchup.r2;
+  const t1r = espnResults[norm(t1.name)];
+  const t2r = espnResults[norm(t2.name)];
+  const isLive = t1r?.isLive || t2r?.isLive;
+  const done = t1r?.completed || t2r?.completed;
+  const t1Won = t1r?.winner && done;
+  const t2Won = t2r?.winner && done;
+  if (t1Won) bracketWinners[matchup.id] = t1.name;
+  else if (t2Won) bracketWinners[matchup.id] = t2.name;
+
+  const tl = (team, res, won) => `<div class="bk-team${won?' bk-winner':''}${res?.isLive?' bk-live-team':''}">
+    <span class="bk-seed">${team.seed}</span>
+    <span class="bk-name">${team.firstFour?`<em>${team.name}</em>`:team.name}</span>
+    ${res?.score&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
+    ${won?'<span class="bk-check">✓</span>':''}
+  </div>`;
+
+  return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}">
+    ${tl(t1,t1r,t1Won)}<div class="bk-divider"></div>${tl(t2,t2r,t2Won)}
+  </div>`;
+}
+
+function advancedCard(m, isElite = false) {
+  const t1 = m.t1, t2 = m.t2;
+  const t1r = t1 ? espnResults[norm(t1.name)] : null;
+  const t2r = t2 ? espnResults[norm(t2.name)] : null;
+  const isLive = t1r?.isLive || t2r?.isLive;
+  const done = (t1r?.completed || t2r?.completed) && (!!t1 && !!t2);
+  const t1Won = t1r?.winner && done;
+  const t2Won = t2r?.winner && done;
+  if (t1Won && t1) bracketWinners[m.id] = t1.name;
+  else if (t2Won && t2) bracketWinners[m.id] = t2.name;
+
+  const sl = (team, res, won) => {
+    if (!team) return `<div class="bk-team bk-tbd"><span class="bk-seed">—</span><span class="bk-name">TBD</span></div>`;
+    return `<div class="bk-team${won?' bk-winner':''}${isLive?' bk-live-team':''}">
+      ${team.seed?`<span class="bk-seed">${team.seed}</span>`:'<span class="bk-seed">·</span>'}
+      <span class="bk-name">${team.name}</span>
+      ${res?.score&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
+      ${won?'<span class="bk-check">✓</span>':''}
+    </div>`;
+  };
+
+  return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}${isElite?' bk-elite':''}">
+    ${sl(t1,t1r,t1Won)}<div class="bk-divider"></div>${sl(t2,t2r,t2Won)}
+  </div>`;
+}
+
+function renderFirstFour() {
+  const container = document.getElementById('firstFourGames');
+  if (!container) return;
+  container.innerHTML = BRACKET_DATA.firstFour.map(ff => {
+    const n1 = norm(ff.teams[0].split(' (')[0]);
+    const n2 = norm(ff.teams[1].split(' (')[0]);
+    const r1 = espnResults[n1], r2 = espnResults[n2];
+    const isLive = r1?.isLive || r2?.isLive;
+    const done = r1?.completed || r2?.completed;
+    return `<div class="ff-game-card${isLive?' live':''}${done?' done':''}">
+      <div class="ff-game-label">${ff.game}</div>
+      <div class="ff-team-line${r1?.winner?' ff-w':''}">
+        <span class="ff-team-text">${ff.teams[0]}</span>
+        ${r1?.score&&(done||isLive)?`<span class="ff-score">${r1.score}</span>`:''}
+      </div>
+      <div class="ff-vs-row">vs</div>
+      <div class="ff-team-line${r2?.winner?' ff-w':''}">
+        <span class="ff-team-text">${ff.teams[1]}</span>
+        ${r2?.score&&(done||isLive)?`<span class="ff-score">${r2.score}</span>`:''}
+      </div>
+      ${isLive?'<div class="ff-live-pill">🔴 LIVE</div>':''}
+      ${done&&(r1?.winner||r2?.winner)?`<div class="ff-advances-label">→ ${BRACKET_DATA.regions[ff.region].name} Region</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+function updateLastUpdated() {
+  const el = document.getElementById('lastUpdated');
+  if (!el) return;
+  el.textContent = `Updated ${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}`;
+}
+
+// ── Standings & Picks ────────────────────────────────────
+
+function initStandings() {
+  renderLeaderboard();
+  renderPicksTable();
+  renderChampPicks();
+}
+
+// Point values per round
+const ROUND_PTS = { r64: 1, r32: 2, s16: 4, e8: 8, ff: 16, champion: 32 };
+const ROUND_LABELS = { r64: 'R64', r32: 'R32', s16: 'Sweet 16', e8: 'Elite 8', ff: 'Final Four', champion: 'Champion' };
+const ROUNDS_ORDER = ['r64', 'r32', 's16', 'e8', 'ff', 'champion'];
+
+function calcScore(member) {
+  let pts = 0, correct = 0, maxPts = 0;
+  for (const round of ROUNDS_ORDER) {
+    const picks = round === 'champion' ? [member.picks.champion] : (member.picks[round] || []);
+    const ptVal = ROUND_PTS[round];
+    for (const pick of picks) {
+      const alive = isTeamAlive(pick);
+      const won = hasTeamWonRound(pick, round);
+      if (won) { pts += ptVal; correct++; }
+      if (alive) maxPts += ptVal;
+    }
+  }
+  return { pts, correct, maxPts };
+}
+
+function isTeamAlive(teamName) {
+  if (!teamName) return false;
+  const n = norm(teamName);
+  const result = espnResults[n];
+  // If no ESPN data yet (pre-tournament), everyone is alive
+  if (!result) return true;
+  // Alive = not yet eliminated (no completed loss)
+  return !(result.completed && !result.winner);
+}
+
+function hasTeamWonRound(teamName, round) {
+  if (!teamName) return false;
+  const n = norm(teamName);
+  const result = espnResults[n];
+  if (!result || !result.completed) return false;
+  // This is a simplification — a more complete version would track per-round wins
+  // For now: winner flag means they won their most recent game
+  return result.winner === true;
+}
+
+function renderLeaderboard() {
+  const el = document.getElementById('leaderboard');
+  if (!el) return;
+
+  const scored = GROUP_PICKS.map(m => {
+    const { pts, correct, maxPts } = calcScore(m);
+    return { ...m, pts, correct, maxPts };
+  }).sort((a, b) => b.pts - a.pts || b.maxPts - a.maxPts);
+
+  el.innerHTML = scored.map((m, i) => {
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}`;
+    const pct = scored[0].maxPts > 0 ? Math.round((m.maxPts / 192) * 100) : 0;
+    const ptsPct = m.maxPts > 0 ? Math.round((m.pts / m.maxPts) * 100) : 0;
+    return `<div class="lb-row${i===0?' lb-leader':''}">
+      <div class="lb-rank">${medal}</div>
+      <div class="lb-info">
+        <div class="lb-name">${m.name}</div>
+        <div class="lb-bracket-name">${m.bracketName || ''}</div>
+      </div>
+      <div class="lb-stats">
+        <div class="lb-pts">${m.pts}<span class="lb-pts-label">pts</span></div>
+        <div class="lb-max">max ${m.maxPts}</div>
+      </div>
+      <div class="lb-bar-wrap">
+        <div class="lb-bar-fill" style="width:${pct}%"></div>
+      </div>
+      <div class="lb-champ-pick">🏆 ${m.picks.champion || '—'}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderPicksTable() {
+  const thead = document.getElementById('picksHead');
+  const tbody = document.getElementById('picksBody');
+  if (!thead || !tbody) return;
+
+  // Columns: Round | Team | Member1 | Member2 | ...
+  const members = GROUP_PICKS;
+
+  thead.innerHTML = `<tr>
+    <th class="pt-round">Round</th>
+    <th class="pt-team">Team Picked</th>
+    ${members.map(m => `<th class="pt-member">${m.name}</th>`).join('')}
+  </tr>`;
+
+  // Build rows: for each round, list all unique picks across all members
+  let rows = '';
+  const roundsToShow = ['e8','ff','champion'];
+
+  for (const round of roundsToShow) {
+    const label = ROUND_LABELS[round];
+    const allPicks = new Set();
+    members.forEach(m => {
+      const picks = round === 'champion' ? [m.picks.champion] : (m.picks[round] || []);
+      picks.forEach(p => p && allPicks.add(p));
+    });
+
+    const pickList = [...allPicks].sort();
+    let first = true;
+    for (const team of pickList) {
+      const alive = isTeamAlive(team);
+      const eliminated = !alive;
+      rows += `<tr class="${eliminated ? 'pick-elim' : 'pick-alive'}">
+        ${first ? `<td class="pt-round-label" rowspan="${pickList.length}">${label}</td>` : ''}
+        <td class="pt-team-name${eliminated?' elim':' alive'}">${team}${eliminated ? ' ✗' : alive ? ' ✓' : ''}</td>
+        ${members.map(m => {
+          const mPicks = round === 'champion' ? [m.picks.champion] : (m.picks[round] || []);
+          const picked = mPicks.includes(team);
+          return `<td class="pt-cell${picked ? (eliminated?' pt-bad':' pt-good') : ' pt-empty'}">${picked ? (eliminated?'✗':'✓') : '·'}</td>`;
+        }).join('')}
+      </tr>`;
+      first = false;
+    }
+  }
+
+  tbody.innerHTML = rows || `<tr><td colspan="10" class="pt-empty-msg">Picks will populate here once brackets are entered</td></tr>`;
+}
+
+function renderChampPicks() {
+  const el = document.getElementById('champPicksGrid');
+  if (!el) return;
+  el.innerHTML = GROUP_PICKS.map(m => {
+    const champ = m.picks.champion;
+    const alive = isTeamAlive(champ);
+    return `<div class="champ-pick-card${!alive?' champ-dead':''}">
+      <div class="champ-pick-name">${m.name}</div>
+      <div class="champ-pick-team">${champ || '—'}</div>
+      ${!alive ? '<div class="champ-pick-status">Eliminated ✗</div>' : '<div class="champ-pick-status alive">Still Alive ✓</div>'}
+    </div>`;
+  }).join('');
+}
+
+// Stub for old references
+function loadStandings() { initStandings(); }
+function saveStandings() {}
+function addParticipant() {}
+function removeParticipant() {}
+function renderStandingsList() {}
+function renderStandingsEditor() {}
+function showSaveFlash() {}

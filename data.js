@@ -3,10 +3,10 @@
 
 const BRACKET_DATA = {
   firstFour: [
-    { id: 'ff1', game: 'UMBC vs Howard', teams: ['UMBC (24-8)', 'Howard (23-10)'], slot: '16-south-a', region: 'south', seedSlot: 16 },
-    { id: 'ff2', game: 'Lehigh vs PVAMU', teams: ['Lehigh (18-16)', 'Prairie View A&M (18-17)'], slot: '16-south-b', region: 'south', seedSlot: 16 },
-    { id: 'ff3', game: 'NC State vs Texas', teams: ['NC State (20-13)', 'Texas (18-14)'], slot: '11-west-a', region: 'west', seedSlot: 11 },
-    { id: 'ff4', game: 'SMU vs Miami (OH)', teams: ['SMU (20-13)', 'Miami (Ohio) (31-1)'], slot: '11-midwest-a', region: 'midwest', seedSlot: 11 },
+    { id: 'ff1', game: 'UMBC vs Howard', teams: ['UMBC (24-8)', 'Howard (23-10)'], region: 'midwest' },
+    { id: 'ff2', game: 'Lehigh vs PVAMU', teams: ['Lehigh (18-16)', 'Prairie View A&M (18-17)'], region: 'south' },
+    { id: 'ff3', game: 'NC State vs Texas', teams: ['NC State (20-13)', 'Texas (18-14)'], region: 'west' },
+    { id: 'ff4', game: 'SMU vs Miami (OH)', teams: ['SMU (20-13)', 'Miami (Ohio) (31-1)'], region: 'midwest' },
   ],
 
   regions: {

@@ -65,6 +65,7 @@ async function fetchAllTournamentData() {
 
   allEspnGames = allGames;
   processEspnResults(allGames);
+  renderFirstFour();   // must run before renderBracket so _ff winners are set
   renderScores(allGames);
   renderBracket();
   initStandings();
@@ -592,24 +593,67 @@ function renderFirstFour() {
   const container = document.getElementById('firstFourGames');
   if (!container) return;
   container.innerHTML = BRACKET_DATA.firstFour.map(ff => {
-    const n1 = norm(ff.teams[0].split(' (')[0]);
-    const n2 = norm(ff.teams[1].split(' (')[0]);
-    const r1 = espnResults[n1], r2 = espnResults[n2];
-    const isLive = r1?.isLive || r2?.isLive;
-    const done = r1?.completed || r2?.completed;
+    // Extract bare team names from "UMBC (24-8)" -> "UMBC"
+    const name1 = ff.teams[0].split(' (')[0].trim();
+    const name2 = ff.teams[1].split(' (')[0].trim();
+    const variants1 = getAllNameVariants(name1);
+    const variants2 = getAllNameVariants(name2);
+
+    // Find the ESPN game containing both these teams
+    let t1data = null, t2data = null, isLive = false, done = false;
+    for (const event of allEspnGames) {
+      const comp = event.competitions?.[0];
+      if (!comp) continue;
+      const teams = comp.competitors || [];
+      const espnKeys = teams.map(t => ({
+        names: [
+          norm(t.team?.displayName || ''),
+          norm(t.team?.shortDisplayName || ''),
+          norm(t.team?.abbreviation || ''),
+        ],
+        score: t.score != null ? String(t.score) : null,
+        winner: t.winner === true,
+      }));
+
+      const match1 = espnKeys.find(e => variants1.some(v => e.names.includes(v)));
+      const match2 = espnKeys.find(e => variants2.some(v => e.names.includes(v)));
+
+      if (match1 && match2) {
+        const status = comp.status?.type;
+        isLive = status?.state === 'in';
+        done = status?.completed || false;
+        t1data = match1;
+        t2data = match2;
+
+        // Record winner for bracket advancement display
+        const winnerMatch = match1.winner ? name1 : match2.winner ? name2 : null;
+        if (winnerMatch && done) {
+          // Find which bracket matchup has this First Four slot and set its _ff winner
+          const bracketMatchup = Object.values(BRACKET_DATA.regions)
+            .flatMap(r => r.matchups)
+            .find(m => m.r2?.firstFour === ff.id || m.r1?.firstFour === ff.id);
+          if (bracketMatchup) {
+            bracketWinners[bracketMatchup.id + '_ff'] = winnerMatch;
+          }
+        }
+        break;
+      }
+    }
+
+    const scoreDisplay = done || isLive;
     return `<div class="ff-game-card${isLive?' live':''}${done?' done':''}">
       <div class="ff-game-label">${ff.game}</div>
-      <div class="ff-team-line${r1?.winner?' ff-w':''}">
-        <span class="ff-team-text">${ff.teams[0]}</span>
-        ${r1?.score&&(done||isLive)?`<span class="ff-score">${r1.score}</span>`:''}
+      <div class="ff-team-line${t1data?.winner?' ff-w':''}">
+        <span class="ff-team-text">${name1}</span>
+        ${scoreDisplay&&t1data?.score!=null?`<span class="ff-score">${t1data.score}</span>`:''}
       </div>
       <div class="ff-vs-row">vs</div>
-      <div class="ff-team-line${r2?.winner?' ff-w':''}">
-        <span class="ff-team-text">${ff.teams[1]}</span>
-        ${r2?.score&&(done||isLive)?`<span class="ff-score">${r2.score}</span>`:''}
+      <div class="ff-team-line${t2data?.winner?' ff-w':''}">
+        <span class="ff-team-text">${name2}</span>
+        ${scoreDisplay&&t2data?.score!=null?`<span class="ff-score">${t2data.score}</span>`:''}
       </div>
       ${isLive?'<div class="ff-live-pill">🔴 LIVE</div>':''}
-      ${done&&(r1?.winner||r2?.winner)?`<div class="ff-advances-label">→ ${BRACKET_DATA.regions[ff.region].name} Region</div>`:''}
+      ${done&&(t1data?.winner||t2data?.winner)?`<div class="ff-advances-label">→ Advances to ${BRACKET_DATA.regions[ff.region].name} Region</div>`:''}
     </div>`;
   }).join('');
 }

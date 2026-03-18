@@ -153,6 +153,26 @@ function processEspnResults(games) {
       const isLive = status?.state === 'in';
       const teams = comp.competitors || [];
 
+      // Check if this is a First Four placeholder matchup
+      // e.g. "Michigan vs HOW/UMBC" — the ESPN game found is Howard vs UMBC (First Four)
+      // We should NOT show that First Four score on the R64 bracket slot.
+      // Instead, only record the winner so they can advance.
+      const isFirstFourSlot = !!(m.r1.firstFour || m.r2.firstFour);
+
+      // Verify this is truly the RIGHT game — both r1 AND r2 names must be present
+      // (not just one via alias). For First Four slots, r2 is a placeholder so we
+      // accept single-team match only for winner tracking, not score display.
+      const r1inGame = r1Names.some(n => teams.some(t =>
+        [norm(t.team?.displayName||""), norm(t.team?.shortDisplayName||""), norm(t.team?.abbreviation||"")].includes(n)
+      ));
+      const r2inGame = r2Names.some(n => teams.some(t =>
+        [norm(t.team?.displayName||""), norm(t.team?.shortDisplayName||""), norm(t.team?.abbreviation||"")].includes(n)
+      ));
+
+      // Only show scores if BOTH actual teams are in this ESPN game
+      // (prevents showing First Four scores on R64 slots, and prevents partial matches)
+      const bothTeamsInGame = r1inGame && r2inGame;
+
       // Match each ESPN competitor to r1 or r2
       let r1espn = null, r2espn = null;
       for (const t of teams) {
@@ -161,24 +181,45 @@ function processEspnResults(games) {
           norm(t.team?.shortDisplayName || ''),
           norm(t.team?.abbreviation || ''),
         ];
-        const isR1 = r1Names.some(n => tNames.includes(n));
-        const isR2 = r2Names.some(n => tNames.includes(n));
+        const matchesR1 = r1Names.some(n => tNames.includes(n));
+        const matchesR2 = r2Names.some(n => tNames.includes(n));
         const entry = {
           score: t.score != null ? String(t.score) : null,
           winner: t.winner === true,
           completed,
           isLive,
         };
-        if (isR1) r1espn = entry;
-        else if (isR2) r2espn = entry;
-        else if (!r1espn) r1espn = entry;  // fallback: assign in order
-        else if (!r2espn) r2espn = entry;
+        if (matchesR1) r1espn = entry;
+        else if (matchesR2) r2espn = entry;
       }
 
-      gameResults[m.id] = { completed, isLive, r1: r1espn, r2: r2espn };
+      // For First Four slots: record the winner so they appear in R64, but don't show scores
+      if (isFirstFourSlot) {
+        // The winner of the First Four game becomes the seed in the R64 matchup
+        // Find which bracket name maps to the winning ESPN team
+        const winnerEntry = teams.find(t => t.winner === true);
+        if (winnerEntry && completed) {
+          const winnerNames = [
+            norm(winnerEntry.team?.displayName || ''),
+            norm(winnerEntry.team?.shortDisplayName || ''),
+          ];
+          // Check if winner matches r1 aliases (unlikely for First Four, r1 is usually the main seed)
+          // More likely winner matches r2 (the First Four qualifier)
+          const winnerIsR2 = r2Names.some(n => winnerNames.includes(n));
+          const winnerIsR1 = r1Names.some(n => winnerNames.includes(n));
+          if (winnerIsR2) bracketWinners[m.id + '_ff'] = winnerEntry.team?.shortDisplayName;
+          if (winnerIsR1) bracketWinners[m.id + '_ff'] = winnerEntry.team?.shortDisplayName;
+          // Don't set gameResults so no score shows on the R64 card
+        }
+        return; // Skip — First Four result shown in the First Four banner only
+      }
 
-      if (r1espn?.winner && completed) bracketWinners[m.id] = m.r1.name;
-      else if (r2espn?.winner && completed) bracketWinners[m.id] = m.r2.name;
+      // For regular matchups: only store scores if we positively matched both teams
+      if (bothTeamsInGame) {
+        gameResults[m.id] = { completed, isLive, r1: r1espn, r2: r2espn };
+        if (r1espn?.winner && completed) bracketWinners[m.id] = m.r1.name;
+        else if (r2espn?.winner && completed) bracketWinners[m.id] = m.r2.name;
+      }
     }
   }
 }
@@ -491,7 +532,6 @@ function getMatchupWinner(id, t1, t2) {
 
 function matchupCard(matchup) {
   const t1 = matchup.r1, t2 = matchup.r2;
-  // Use gameResults for accurate paired scores — both teams from same game object
   const gr = gameResults[matchup.id];
   const t1r = gr?.r1 || null;
   const t2r = gr?.r2 || null;
@@ -500,12 +540,20 @@ function matchupCard(matchup) {
   const t1Won = t1r?.winner && done;
   const t2Won = t2r?.winner && done;
 
-  const tl = (team, res, won) => `<div class="bk-team${won?' bk-winner':''}${isLive?' bk-live-team':''}">
-    <span class="bk-seed">${team.seed}</span>
-    <span class="bk-name">${team.firstFour?`<em>${team.name}</em>`:team.name}</span>
-    ${res?.score!=null&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
-    ${won?'<span class="bk-check">✓</span>':''}
-  </div>`;
+  const tl = (team, res, won) => {
+    // For First Four placeholder slots, show the actual winner name if known
+    let displayName = team.name;
+    if (team.firstFour) {
+      const ffWinner = bracketWinners[matchup.id + '_ff'];
+      displayName = ffWinner ? ffWinner : team.name;
+    }
+    return `<div class="bk-team${won?' bk-winner':''}${isLive?' bk-live-team':''}${team.firstFour&&!bracketWinners[matchup.id+'_ff']?' bk-tbd':''}">
+      <span class="bk-seed">${team.seed}</span>
+      <span class="bk-name">${displayName}</span>
+      ${res?.score!=null&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
+      ${won?'<span class="bk-check">✓</span>':''}
+    </div>`;
+  };
 
   return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}">
     ${tl(t1,t1r,t1Won)}<div class="bk-divider"></div>${tl(t2,t2r,t2Won)}

@@ -73,56 +73,169 @@ async function fetchAllTournamentData() {
   if (btn) { btn.textContent = '↻ Refresh'; btn.disabled = false; }
 }
 
+// gameResults[matchupId] = { t1: {name,score,winner,completed,isLive}, t2: {...} }
+// This is the bracket's source of truth — populated by matching ESPN games to bracket matchups
+let gameResults = {};
+
 function processEspnResults(games) {
   espnResults = {};
   bracketWinners = {};
+  gameResults = {};
 
+  // First pass: index all ESPN teams by every name variant
   for (const event of games) {
     const comp = event.competitions?.[0];
     if (!comp) continue;
     const status = comp.status?.type;
-    const completed = status?.completed;
+    const completed = status?.completed || false;
     const isLive = status?.state === 'in';
     const competitors = comp.competitors || [];
 
-    // Store each competitor, AND cross-store their opponent's score so bracket cards
-    // can always show both scores even if one name doesn't normalize perfectly
-    const teamEntries = competitors.map(team => ({
-      raw: team.team?.displayName || team.team?.shortDisplayName || '',
-      short: team.team?.shortDisplayName || '',
-      abbrev: team.team?.abbreviation || '',
-      winner: team.winner === true,
-      score: team.score != null ? team.score : null,
-      completed,
-      isLive,
-      seed: team.curatedRank?.current || null,
-      logo: team.team?.logo || '',
-    }));
-
-    for (const entry of teamEntries) {
-      if (!entry.raw) continue;
-      const names = [entry.raw, entry.short, entry.abbrev].filter(Boolean);
-      for (const n of names) {
-        espnResults[norm(n)] = {
-          winner: entry.winner,
-          score: entry.score,
-          completed: entry.completed,
-          isLive: entry.isLive,
-          seed: entry.seed,
-          logo: entry.logo,
-        };
+    for (const team of competitors) {
+      const raw   = team.team?.displayName || '';
+      const short = team.team?.shortDisplayName || '';
+      const abbr  = team.team?.abbreviation || '';
+      const entry = {
+        winner: team.winner === true,
+        score: team.score != null ? String(team.score) : null,
+        completed,
+        isLive,
+        seed: team.curatedRank?.current || null,
+        logo: team.team?.logo || '',
+        espnShort: short,
+        espnRaw: raw,
+      };
+      for (const n of [raw, short, abbr].filter(Boolean)) {
+        espnResults[norm(n)] = entry;
       }
     }
   }
 
-  // Map results to matchup IDs using bracket team names
+  // Second pass: for each bracket matchup, find the matching ESPN game
+  // by looking for a game where BOTH teams (or at least one with winner=true) match
   const allMatchups = Object.values(BRACKET_DATA.regions).flatMap(r => r.matchups);
   for (const m of allMatchups) {
-    const t1r = findEspnResult(m.r1.name);
-    const t2r = findEspnResult(m.r2.name);
-    if (t1r?.winner && t1r?.completed) bracketWinners[m.id] = m.r1.name;
-    else if (t2r?.winner && t2r?.completed) bracketWinners[m.id] = m.r2.name;
+    const r1Names = getAllNameVariants(m.r1.name);
+    const r2Names = getAllNameVariants(m.r2.name);
+
+    // Find the ESPN game that contains one of r1's names AND one of r2's names
+    let matchedGame = null;
+    for (const event of games) {
+      const comp = event.competitions?.[0];
+      if (!comp) continue;
+      const teams = comp.competitors || [];
+      const espnNames = teams.flatMap(t => [
+        norm(t.team?.displayName || ''),
+        norm(t.team?.shortDisplayName || ''),
+        norm(t.team?.abbreviation || ''),
+      ]).filter(Boolean);
+
+      const hasR1 = r1Names.some(n => espnNames.includes(n));
+      const hasR2 = r2Names.some(n => espnNames.includes(n));
+
+      if (hasR1 || hasR2) {
+        // For First Four matchups (combined slots like HOW/UMBC), match on either team
+        if (m.r2.firstFour || m.r1.firstFour) {
+          if (hasR1 || hasR2) { matchedGame = { event, comp }; break; }
+        } else if (hasR1 && hasR2) {
+          matchedGame = { event, comp }; break;
+        } else if (hasR1 || hasR2) {
+          // Partial — keep looking but save as fallback
+          if (!matchedGame) matchedGame = { event, comp };
+        }
+      }
+    }
+
+    if (matchedGame) {
+      const { comp } = matchedGame;
+      const status = comp.status?.type;
+      const completed = status?.completed || false;
+      const isLive = status?.state === 'in';
+      const teams = comp.competitors || [];
+
+      // Match each ESPN competitor to r1 or r2
+      let r1espn = null, r2espn = null;
+      for (const t of teams) {
+        const tNames = [
+          norm(t.team?.displayName || ''),
+          norm(t.team?.shortDisplayName || ''),
+          norm(t.team?.abbreviation || ''),
+        ];
+        const isR1 = r1Names.some(n => tNames.includes(n));
+        const isR2 = r2Names.some(n => tNames.includes(n));
+        const entry = {
+          score: t.score != null ? String(t.score) : null,
+          winner: t.winner === true,
+          completed,
+          isLive,
+        };
+        if (isR1) r1espn = entry;
+        else if (isR2) r2espn = entry;
+        else if (!r1espn) r1espn = entry;  // fallback: assign in order
+        else if (!r2espn) r2espn = entry;
+      }
+
+      gameResults[m.id] = { completed, isLive, r1: r1espn, r2: r2espn };
+
+      if (r1espn?.winner && completed) bracketWinners[m.id] = m.r1.name;
+      else if (r2espn?.winner && completed) bracketWinners[m.id] = m.r2.name;
+    }
   }
+}
+
+// Get all name variants we should try matching for a bracket team name
+function getAllNameVariants(bracketName) {
+  if (!bracketName) return [];
+  const n = norm(bracketName);
+  const base = [n];
+
+  const aliasMap = {
+    'connecticut': ['uconn'],
+    'uconn': ['connecticut'],
+    'michigan st': ['michigan state', 'mich state'],
+    'michigan state': ['michigan st', 'mich state'],
+    'north dakota st': ['north dakota state', 'ndsu', 'n dakota state'],
+    'n dak st': ['north dakota state', 'ndsu'],
+    'cal baptist': ['california baptist'],
+    'california baptist': ['cal baptist', 'cbaptist'],
+    'northern iowa': ['n iowa', 'uni'],
+    'south florida': ['usf', 's florida'],
+    'high point': ['hi point', 'hpu'],
+    'kennesaw st': ['kennesaw state'],
+    'kennesaw state': ['kennesaw st'],
+    "saint mary's": ["st mary's", 'saint marys'],
+    'queens (nc)': ['queens university', 'queens university of charlotte'],
+    'queens university': ['queens (nc)', 'queens nc'],
+    'how/umbc': ['howard', 'umbc'],
+    'umbc/how': ['umbc', 'howard', 'howard bison'],
+    'pv/leh': ['prairie view', 'prairie view a&m', 'lehigh'],
+    'lehigh/pvamu': ['lehigh', 'prairie view and m', 'prairie view'],
+    'nc st/texas': ['nc state', 'north carolina state', 'texas longhorns', 'texas'],
+    'tx/ncst': ['nc state', 'texas'],
+    'moh/smu': ['miami oh', 'miami ohio', 'smu', 'southern methodist'],
+    'smu/mia oh': ['smu', 'southern methodist', 'miami ohio', 'miami oh'],
+    'miami (fl)': ['miami', 'miami fl', 'miami hurricanes'],
+    'miami (oh)': ['miami oh', 'miami ohio'],
+    'vcu': ['virginia commonwealth'],
+    'virginia commonwealth': ['vcu'],
+    'saint louis': ['st louis', 'slu'],
+    'iowa st': ['iowa state'],
+    'iowa state': ['iowa st'],
+    'wright st': ['wright state'],
+    'wright state': ['wright st'],
+    'tennessee st': ['tennessee state'],
+    'tennessee state': ['tennessee st', 'tenn state'],
+    'long island': ['liu brooklyn', 'liu', 'long island university'],
+    'liu brooklyn': ['long island', 'long island university'],
+    'nc st': ['nc state', 'north carolina state'],
+    'north carolina': ['unc', 'unc tar heels'],
+    'texas a&m': ['texas a and m', 'texas am', 'texas a&m aggies'],
+    'ucf': ['central florida', 'uc-f'],
+    'byu': ['brigham young'],
+  };
+
+  const extra = aliasMap[n] || [];
+  return [...new Set([...base, ...extra])];
 }
 
 function norm(name) {
@@ -378,26 +491,23 @@ function getMatchupWinner(id, t1, t2) {
 
 function matchupCard(matchup) {
   const t1 = matchup.r1, t2 = matchup.r2;
-  const t1r = findEspnResult(t1.name);
-  const t2r = findEspnResult(t2.name);
-  const isLive = t1r?.isLive || t2r?.isLive;
-  const done = t1r?.completed || t2r?.completed;
+  // Use gameResults for accurate paired scores — both teams from same game object
+  const gr = gameResults[matchup.id];
+  const t1r = gr?.r1 || null;
+  const t2r = gr?.r2 || null;
+  const isLive = gr?.isLive || false;
+  const done = gr?.completed || false;
   const t1Won = t1r?.winner && done;
   const t2Won = t2r?.winner && done;
-  if (t1Won) bracketWinners[matchup.id] = t1.name;
-  else if (t2Won) bracketWinners[matchup.id] = t2.name;
 
-  // Show scores if either team has a completed/live result
-  const showScores = isLive || done || t1r?.completed || t2r?.completed;
-
-  const tl = (team, res, won) => `<div class="bk-team${won?' bk-winner':''}${res?.isLive?' bk-live-team':''}">
+  const tl = (team, res, won) => `<div class="bk-team${won?' bk-winner':''}${isLive?' bk-live-team':''}">
     <span class="bk-seed">${team.seed}</span>
     <span class="bk-name">${team.firstFour?`<em>${team.name}</em>`:team.name}</span>
-    ${res?.score!=null&&showScores?`<span class="bk-score">${res.score}</span>`:''}
+    ${res?.score!=null&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
     ${won?'<span class="bk-check">✓</span>':''}
   </div>`;
 
-  return `<div class="bk-matchup${isLive?' bk-live':''}${(done||t1r?.completed||t2r?.completed)?' bk-done':''}">
+  return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}">
     ${tl(t1,t1r,t1Won)}<div class="bk-divider"></div>${tl(t2,t2r,t2Won)}
   </div>`;
 }
@@ -558,7 +668,7 @@ function renderPicksTable() {
   // Build rows: for each round, list all unique picks across all members
   // Labels describe what the teams ARE at that stage, not which round they won
   const TABLE_LABELS = {
-    s16: 'Sweet 16',
+    s16: 'Elite 8',
     e8: 'Final Four',       // teams that won their Elite 8 game → are in Final Four
     ff: 'Championship',     // teams that won their Final Four game → are in Championship
     champion: 'Champion',

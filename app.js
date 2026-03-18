@@ -83,32 +83,43 @@ function processEspnResults(games) {
     const status = comp.status?.type;
     const completed = status?.completed;
     const isLive = status?.state === 'in';
+    const competitors = comp.competitors || [];
 
-    for (const team of (comp.competitors || [])) {
-      const raw = team.team?.displayName || team.team?.shortDisplayName || '';
-      const short = team.team?.shortDisplayName || '';
-      if (!raw) continue;
+    // Store each competitor, AND cross-store their opponent's score so bracket cards
+    // can always show both scores even if one name doesn't normalize perfectly
+    const teamEntries = competitors.map(team => ({
+      raw: team.team?.displayName || team.team?.shortDisplayName || '',
+      short: team.team?.shortDisplayName || '',
+      abbrev: team.team?.abbreviation || '',
+      winner: team.winner === true,
+      score: team.score != null ? team.score : null,
+      completed,
+      isLive,
+      seed: team.curatedRank?.current || null,
+      logo: team.team?.logo || '',
+    }));
 
-      const entry = {
-        winner: team.winner === true,
-        score: team.score,
-        completed,
-        isLive,
-        seed: team.curatedRank?.current || null,
-        logo: team.team?.logo || '',
-        displayName: short || raw,
-      };
-
-      espnResults[norm(raw)] = entry;
-      if (short && short !== raw) espnResults[norm(short)] = entry;
+    for (const entry of teamEntries) {
+      if (!entry.raw) continue;
+      const names = [entry.raw, entry.short, entry.abbrev].filter(Boolean);
+      for (const n of names) {
+        espnResults[norm(n)] = {
+          winner: entry.winner,
+          score: entry.score,
+          completed: entry.completed,
+          isLive: entry.isLive,
+          seed: entry.seed,
+          logo: entry.logo,
+        };
+      }
     }
   }
 
-  // Map results to matchup IDs
+  // Map results to matchup IDs using bracket team names
   const allMatchups = Object.values(BRACKET_DATA.regions).flatMap(r => r.matchups);
   for (const m of allMatchups) {
-    const t1r = espnResults[norm(m.r1.name)];
-    const t2r = espnResults[norm(m.r2.name)];
+    const t1r = findEspnResult(m.r1.name);
+    const t2r = findEspnResult(m.r2.name);
     if (t1r?.winner && t1r?.completed) bracketWinners[m.id] = m.r1.name;
     else if (t2r?.winner && t2r?.completed) bracketWinners[m.id] = m.r2.name;
   }
@@ -116,8 +127,72 @@ function processEspnResults(games) {
 
 function norm(name) {
   return (name || '').toLowerCase()
-    .replace(/\./g,'').replace(/\s+/g,' ')
-    .replace(/\bst\b/g,'state').replace(/&/g,'and').trim();
+    .replace(/\./g,'')
+    .replace(/&/g,'and')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+// Build a looser match — try multiple variations to find ESPN result
+function findEspnResult(bracketName) {
+  if (!bracketName) return null;
+  const n = norm(bracketName);
+
+  // Direct lookup first
+  if (espnResults[n]) return espnResults[n];
+
+  // Try common bracket name -> ESPN name mappings
+  const aliases = {
+    'connecticut': ['uconn'],
+    'uconn': ['connecticut'],
+    'michigan state': ['mich state','mich st'],
+    'north dakota state': ['n dakota state', 'ndsu'],
+    'cal baptist': ['california baptist','cbaptist'],
+    'northern iowa': ['n iowa'],
+    'south florida': ['s florida','usf'],
+    'high point': ['hi point'],
+    'kennesaw state': ['kennesaw st','ksu'],
+    "saint mary's": ["st mary's", 'saint marys', "st. mary's"],
+    'queens (nc)': ['queens university','queens university of charlotte','queens nc'],
+    "queens university": ['queens (nc)', 'queens nc'],
+    'how/umbc': ['howard','umbc'],
+    'umbc/how': ['umbc','howard'],
+    'pv/leh': ['prairie view','prairie view a&m','lehigh'],
+    'lehigh/pvamu': ['lehigh', 'prairie view'],
+    'nc st/texas': ['nc state','texas'],
+    'tx/ncst': ['nc state', 'texas'],
+    'moh/smu': ['miami oh','miami ohio','smu'],
+    'mod/smu': ['miami oh','miami ohio','smu'],
+    'miami (fl)': ['miami fl', 'miami'],
+    'miami (oh)': ['miami oh', 'miami ohio'],
+    'virginia commonwealth': ['vcu'],
+    'vcu': ['virginia commonwealth'],
+    'saint louis': ['st louis','slu'],
+    'iowa state': ['iowa st'],
+    'iowa st': ['iowa state'],
+    'n dak st': ['north dakota state', 'ndsu'],
+    'wright state': ['wright st'],
+    'tennessee state': ['tenn state','tenn st'],
+    'long island': ['liu brooklyn','liu','long island university'],
+    'liu brooklyn': ['long island','long island university'],
+  };
+
+  const found = aliases[n];
+  if (found) {
+    for (const alias of found) {
+      if (espnResults[alias]) return espnResults[alias];
+    }
+  }
+
+  // Partial match fallback — if any key starts with first word of bracket name
+  const firstWord = n.split(' ')[0];
+  if (firstWord.length > 4) {
+    for (const [key, val] of Object.entries(espnResults)) {
+      if (key.startsWith(firstWord)) return val;
+    }
+  }
+
+  return null;
 }
 
 // ── Render Scores ─────────────────────────────────────────
@@ -130,20 +205,37 @@ function renderScores(games) {
     return;
   }
 
-  // Sort: upcoming first → live in-progress → completed (most recent) last
+  // Sort order:
+  //   0 = live (in-progress)
+  //   1 = recently finished (within last 60 min) — stays near top
+  //   2 = upcoming (pre-game)
+  //   3 = older completed games
+  const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
+
   const stateOrder = (e) => {
-    const state = e.competitions?.[0]?.status?.type?.state;
-    if (state === 'pre') return 0;
-    if (state === 'in')  return 1;
-    return 2;
+    const comp = e.competitions?.[0];
+    const state = comp?.status?.type?.state;
+    if (state === 'in') return 0;
+    if (comp?.status?.type?.completed) {
+      // Check if game ended within the last hour using the event date as proxy
+      // ESPN doesn't always give end time, so we use date + ~2.5hr game length estimate
+      const startTime = e.date ? new Date(e.date).getTime() : 0;
+      const estimatedEnd = startTime + (2.5 * 60 * 60 * 1000);
+      const recentlyFinished = (now - estimatedEnd) < ONE_HOUR;
+      return recentlyFinished ? 1 : 3;
+    }
+    return 2; // pre-game upcoming
   };
+
   const sorted = [...games].sort((a, b) => {
     const sDiff = stateOrder(a) - stateOrder(b);
     if (sDiff !== 0) return sDiff;
     const aDate = a.date || '', bDate = b.date || '';
-    return stateOrder(a) === 2
-      ? bDate.localeCompare(aDate)
-      : aDate.localeCompare(bDate);
+    const order = stateOrder(a);
+    if (order === 0 || order === 1) return aDate.localeCompare(bDate); // live/recent: earliest first
+    if (order === 2) return aDate.localeCompare(bDate);  // upcoming: soonest first
+    return bDate.localeCompare(aDate); // old completed: most recent first
   });
 
   grid.innerHTML = sorted.map(event => {
@@ -277,8 +369,8 @@ function getMatchupWinner(id, t1, t2) {
   const winner = bracketWinners[id];
   if (winner) return t1?.name === winner ? t1 : t2?.name === winner ? t2 : { name: winner };
   // Try ESPN direct lookup for advanced rounds
-  const t1r = t1 ? espnResults[norm(t1.name)] : null;
-  const t2r = t2 ? espnResults[norm(t2.name)] : null;
+  const t1r = t1 ? findEspnResult(t1.name) : null;
+  const t2r = t2 ? findEspnResult(t2.name) : null;
   if (t1r?.winner && t1r?.completed) { bracketWinners[id] = t1.name; return t1; }
   if (t2r?.winner && t2r?.completed) { bracketWinners[id] = t2.name; return t2; }
   return null;
@@ -286,8 +378,8 @@ function getMatchupWinner(id, t1, t2) {
 
 function matchupCard(matchup) {
   const t1 = matchup.r1, t2 = matchup.r2;
-  const t1r = espnResults[norm(t1.name)];
-  const t2r = espnResults[norm(t2.name)];
+  const t1r = findEspnResult(t1.name);
+  const t2r = findEspnResult(t2.name);
   const isLive = t1r?.isLive || t2r?.isLive;
   const done = t1r?.completed || t2r?.completed;
   const t1Won = t1r?.winner && done;
@@ -295,22 +387,25 @@ function matchupCard(matchup) {
   if (t1Won) bracketWinners[matchup.id] = t1.name;
   else if (t2Won) bracketWinners[matchup.id] = t2.name;
 
+  // Show scores if either team has a completed/live result
+  const showScores = isLive || done || t1r?.completed || t2r?.completed;
+
   const tl = (team, res, won) => `<div class="bk-team${won?' bk-winner':''}${res?.isLive?' bk-live-team':''}">
     <span class="bk-seed">${team.seed}</span>
     <span class="bk-name">${team.firstFour?`<em>${team.name}</em>`:team.name}</span>
-    ${res?.score&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
+    ${res?.score!=null&&showScores?`<span class="bk-score">${res.score}</span>`:''}
     ${won?'<span class="bk-check">✓</span>':''}
   </div>`;
 
-  return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}">
+  return `<div class="bk-matchup${isLive?' bk-live':''}${(done||t1r?.completed||t2r?.completed)?' bk-done':''}">
     ${tl(t1,t1r,t1Won)}<div class="bk-divider"></div>${tl(t2,t2r,t2Won)}
   </div>`;
 }
 
 function advancedCard(m, isElite = false) {
   const t1 = m.t1, t2 = m.t2;
-  const t1r = t1 ? espnResults[norm(t1.name)] : null;
-  const t2r = t2 ? espnResults[norm(t2.name)] : null;
+  const t1r = t1 ? findEspnResult(t1.name) : null;
+  const t2r = t2 ? findEspnResult(t2.name) : null;
   const isLive = t1r?.isLive || t2r?.isLive;
   const done = (t1r?.completed || t2r?.completed) && (!!t1 && !!t2);
   const t1Won = t1r?.winner && done;
@@ -318,17 +413,19 @@ function advancedCard(m, isElite = false) {
   if (t1Won && t1) bracketWinners[m.id] = t1.name;
   else if (t2Won && t2) bracketWinners[m.id] = t2.name;
 
+  const showScores = isLive || t1r?.completed || t2r?.completed;
+
   const sl = (team, res, won) => {
     if (!team) return `<div class="bk-team bk-tbd"><span class="bk-seed">—</span><span class="bk-name">TBD</span></div>`;
     return `<div class="bk-team${won?' bk-winner':''}${isLive?' bk-live-team':''}">
       ${team.seed?`<span class="bk-seed">${team.seed}</span>`:'<span class="bk-seed">·</span>'}
       <span class="bk-name">${team.name}</span>
-      ${res?.score&&(done||isLive)?`<span class="bk-score">${res.score}</span>`:''}
+      ${res?.score!=null&&showScores?`<span class="bk-score">${res.score}</span>`:''}
       ${won?'<span class="bk-check">✓</span>':''}
     </div>`;
   };
 
-  return `<div class="bk-matchup${isLive?' bk-live':''}${done?' bk-done':''}${isElite?' bk-elite':''}">
+  return `<div class="bk-matchup${isLive?' bk-live':''}${(t1r?.completed||t2r?.completed)?' bk-done':''}${isElite?' bk-elite':''}">
     ${sl(t1,t1r,t1Won)}<div class="bk-divider"></div>${sl(t2,t2r,t2Won)}
   </div>`;
 }
@@ -375,7 +472,7 @@ function initStandings() {
 
 // Point values per round
 const ROUND_PTS = { r64: 1, r32: 2, s16: 4, e8: 8, ff: 16, champion: 32 };
-const ROUND_LABELS = { r64: 'R64', r32: 'R32', s16: 'Sweet 16', e8: 'Elite 8', ff: 'Final Four', champion: 'Champion' };
+const ROUND_LABELS = { r64: 'R64', r32: 'R32', s16: 'Sweet 16', e8: 'Elite 8', ff: 'Final Four', champion: 'Championship' };
 const ROUNDS_ORDER = ['r64', 'r32', 's16', 'e8', 'ff', 'champion'];
 
 function calcScore(member) {
@@ -459,11 +556,19 @@ function renderPicksTable() {
   </tr>`;
 
   // Build rows: for each round, list all unique picks across all members
+  // Labels describe what the teams ARE at that stage, not which round they won
+  const TABLE_LABELS = {
+    s16: 'Sweet 16',
+    e8: 'Final Four',       // teams that won their Elite 8 game → are in Final Four
+    ff: 'Championship',     // teams that won their Final Four game → are in Championship
+    champion: 'Champion',
+  };
+
   let rows = '';
-  const roundsToShow = ['e8','ff','champion'];
+  const roundsToShow = ['s16','e8','ff','champion'];
 
   for (const round of roundsToShow) {
-    const label = ROUND_LABELS[round];
+    const label = TABLE_LABELS[round];
     const allPicks = new Set();
     members.forEach(m => {
       const picks = round === 'champion' ? [m.picks.champion] : (m.picks[round] || []);
